@@ -487,7 +487,7 @@ def generate_random_numbers(size: int, min_val: int = 0, max_val: int = 100000) 
 
 def save_numbers_to_file(numbers: List[int], filename: str) -> None:
     """Salva uma lista de números em um arquivo de texto."""
-    with open(filename, 'w') as file:
+    with open(filename, 'w', encoding='utf-8') as file:
         for number in numbers:
             file.write(f"{number}\n")
 
@@ -503,7 +503,7 @@ def load_numbers_from_file(filename: str) -> List[int]:
 
 def save_results_to_file(results: Dict[str, Any], filename: str) -> None:
     """Salva os resultados da execução em um arquivo de texto."""
-    with open(filename, 'w') as file:
+    with open(filename, 'w', encoding='utf-8') as file:
         file.write("Resultados de Desempenho dos Algoritmos de Ordenação\n")
         file.write("=================================================\n\n")
         
@@ -537,7 +537,7 @@ def main():
     # Subcomando para executar algoritmos
     run_parser = subparsers.add_parser('run', help='Executa algoritmos de ordenação')
     run_parser.add_argument('--input', type=str, default='data.txt', help='Arquivo de entrada (padrão: data.txt)')
-    run_parser.add_argument('--algorithms', type=str, nargs='+', default='all', 
+    run_parser.add_argument('--algorithms', type=str, nargs='+', default=['all'], 
                           help='Algoritmos a serem executados (padrão: all)')
     run_parser.add_argument('--repetitions', type=int, default=5, 
                           help='Número de repetições para cada algoritmo (padrão: 5)')
@@ -578,7 +578,11 @@ def main():
         print(f"Dados carregados: {data_size} números")
         
         # Determina quais algoritmos executar
-        algorithms_to_run = list(available_strategies.keys()) if args.algorithms == 'all' else args.algorithms
+        algorithms_to_run = []
+        if 'all' in args.algorithms:
+            algorithms_to_run = list(available_strategies.keys())
+        else:
+            algorithms_to_run = args.algorithms
         
         # Resultados
         results = {
