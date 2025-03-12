@@ -1,54 +1,22 @@
 # Projeto de Algoritmos de Ordenação
 
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-Um projeto para implementar, analisar e comparar a performance de diferentes algoritmos de ordenação utilizando o padrão de projeto Strategy. O projeto inclui geração de dados aleatórios, execução dos algoritmos e coleta de métricas de desempenho.
-
-## 📋 Tabela de Conteúdos
-
-- [Visão Geral](#visão-geral)
-- [Algoritmos Implementados](#algoritmos-implementados)
-- [Pré-requisitos](#pré-requisitos)
-- [Instalação](#instalação)
-- [Como Usar](#como-usar)
-  - [Gerando Dados](#gerando-dados)
-  - [Executando Algoritmos](#executando-algoritmos)
-  - [Exemplos de Uso](#exemplos-de-uso)
-- [Estrutura do Projeto](#estrutura-do-projeto)
-- [Padrão Strategy](#padrão-strategy)
-- [Métricas Coletadas](#métricas-coletadas)
-- [Roadmap](#roadmap)
-- [Contribuição](#contribuição)
-- [Licença](#licença)
-
 ## 🔍 Visão Geral
 
 Este projeto implementa diversos algoritmos de ordenação e compara seu desempenho em termos de tempo de execução, número de comparações e número de trocas. A implementação utiliza o padrão de projeto Strategy para permitir uma arquitetura modular e facilmente extensível.
 
 ## 🧮 Algoritmos Implementados
 
-### Básicos
 - Bubble Sort
 - Bubble Sort Melhorado
 - Insertion Sort
 - Selection Sort
-
-### Avançados (Dividir para Conquistar)
 - Quick Sort
 - Merge Sort
 - Tim Sort
-
-### Outros Algoritmos
 - Heap Sort
 - Counting Sort (para números inteiros)
 - Radix Sort (para inteiros)
 - Shell Sort
-
-## 📋 Pré-requisitos
-
-- Python 3.8 ou superior
-- Bibliotecas padrão: os, time, random, argparse, statistics, abc, typing
 
 ## 🛠️ Instalação
 
@@ -148,20 +116,4 @@ Próximos passos para o projeto:
 - [x] Coleta de métricas de desempenho
 - [x] Interface de linha de comando
 - [ ] Implementação de logs com OpenTelemetry
-- [ ] Integração com ferramentas de visualização (Jaeger, Prometheus + Grafana, etc.)
-- [ ] Visualização de gráficos comparativos
-- [ ] Interface gráfica para interação com o sistema
-
-## 👥 Contribuição
-
-Contribuições são bem-vindas! Sinta-se à vontade para abrir issues ou pull requests.
-
-1. Fork o projeto
-2. Crie sua branch de feature (`git checkout -b feature/nova-feature`)
-3. Commit suas mudanças (`git commit -m 'Adiciona nova feature'`)
-4. Push para a branch (`git push origin feature/nova-feature`)
-5. Abra um Pull Request
-
-## 📜 Licença
-
-Este projeto está licenciado sob a licença MIT - veja o arquivo LICENSE para mais detalhes.
+- [ ] Integração com ferramentas de visualização (escolher)
