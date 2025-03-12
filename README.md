@@ -54,8 +54,7 @@ Este projeto implementa diversos algoritmos de ordenação e compara seu desempe
 
 1. Clone o repositório:
 ```
-git clone https://github.com/seu-usuario/sorting-algorithms.git
-cd sorting-algorithms
+git clone https://github.com/Fhuller/sortComparisons.git
 ```
 
 2. Não é necessário instalar dependências externas para a funcionalidade básica.
