@@ -10,8 +10,83 @@ import time
 import random
 import argparse
 import statistics
+import logging
+import matplotlib.pyplot as plt
+import numpy as np
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Tuple
+
+# OpenTelemetry imports
+from opentelemetry import trace
+from opentelemetry import metrics
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.metrics.export import ConsoleMetricExporter, PeriodicExportingMetricReader
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# Configure OpenTelemetry
+def setup_opentelemetry(service_name="sorting-algorithms"):
+    """
+    Configura o OpenTelemetry para coletar traces e métricas e enviá-los para o OpenTelemetry Collector.
+    """
+
+    # Definir os recursos do serviço
+    resource = Resource.create({SERVICE_NAME: service_name})
+
+    # Criar o provedor de traces
+    tracer_provider = TracerProvider(resource=resource)
+
+    # Configurar o exportador OTLP para o Collector rodando no Docker (gRPC)
+    otlp_endpoint = "http://localhost:4317"
+
+    # Exportador de spans (traces)
+    otlp_trace_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
+    tracer_provider.add_span_processor(BatchSpanProcessor(otlp_trace_exporter))
+
+    # Definir o provedor de traces globalmente
+    trace.set_tracer_provider(tracer_provider)
+
+    # Criar o provedor de métricas
+    meter_provider = MeterProvider(
+        resource=resource,
+        metric_readers=[PeriodicExportingMetricReader(OTLPMetricExporter(endpoint=otlp_endpoint, insecure=True))]
+    )
+
+    # Definir o provedor de métricas globalmente
+    metrics.set_meter_provider(meter_provider)
+
+    logger.info(f"✅ OpenTelemetry configurado e enviando dados para {otlp_endpoint}")
+
+    return trace.get_tracer(service_name), metrics.get_meter(service_name)
+
+
+# Get tracer and meter
+tracer, meter = setup_opentelemetry()
+
+# Create metrics
+sort_execution_time = meter.create_histogram(
+    name="sort_execution_time",
+    description="Time taken to execute sorting algorithm",
+    unit="ms"
+)
+
+sort_comparisons = meter.create_counter(
+    name="sort_comparisons",
+    description="Number of comparisons made during sorting"
+)
+
+sort_swaps = meter.create_counter(
+    name="sort_swaps",
+    description="Number of swaps made during sorting"
+)
 
 
 # Implementação do padrão Strategy para algoritmos de ordenação
@@ -21,11 +96,46 @@ class SortingStrategy(ABC):
     def __init__(self):
         self.comparisons = 0
         self.swaps = 0
+        self.algorithm_name = self.__class__.__name__
     
     @abstractmethod
-    def sort(self, data: List[int]) -> List[int]:
-        """Método abstrato que deve ser implementado por todas as estratégias de ordenação."""
+    def _sort_implementation(self, data: List[int]) -> List[int]:
+        """
+        Método abstrato que deve ser implementado por todas as estratégias de ordenação.
+        Esta é a implementação específica do algoritmo.
+        """
         pass
+    
+    def sort(self, data: List[int]) -> List[int]:
+        """
+        Método público que executa o algoritmo de ordenação com toda a instrumentação necessária.
+        Este método faz a inicialização, chama a implementação específica e registra as métricas.
+        """
+        self.reset_metrics()
+        arr = data.copy()
+        n = len(arr)
+        
+        # Execute o algoritmo com o span
+        with tracer.start_as_current_span(f"{self.algorithm_name.lower()}_algorithm") as span:
+            start_time = time.time()  # ⏳ Inicia a contagem do tempo
+            
+            # Chama a implementação específica
+            self._sort_implementation(arr)
+            
+            end_time = time.time()  # ⏳ Finaliza a contagem do tempo
+            
+            # 📌 Adicionando atributos importantes ao span
+            span.set_attribute("algorithm", self.algorithm_name)
+            span.set_attribute("dataset_size", n)
+            span.set_attribute("execution_time_ms", (end_time - start_time) * 1000)
+            span.set_attribute("comparisons", self.comparisons)
+            span.set_attribute("swaps", self.swaps)
+            
+            # Registra métricas no OpenTelemetry
+            execution_time_ms = (end_time - start_time) * 1000
+            sort_execution_time.record(execution_time_ms, {"algorithm": self.algorithm_name})
+        
+        return arr
     
     def get_metrics(self) -> Dict[str, int]:
         """Retorna as métricas de comparações e trocas."""
@@ -42,22 +152,54 @@ class SortingStrategy(ABC):
     def compare(self, a: int, b: int) -> bool:
         """Compara dois elementos e incrementa o contador de comparações."""
         self.comparisons += 1
+        # Record comparison in OpenTelemetry
+        sort_comparisons.add(1, {"algorithm": self.algorithm_name})
         return a > b
     
     def swap(self, data: List[int], i: int, j: int) -> None:
         """Troca dois elementos e incrementa o contador de trocas."""
         if i != j:
             self.swaps += 1
+            # Record swap in OpenTelemetry
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
             data[i], data[j] = data[j], data[i]
+
+    def run_with_telemetry(self, data: List[int]) -> Tuple[List[int], Dict[str, Any]]:
+        """Execute o algoritmo de ordenação com telemetria OpenTelemetry."""
+        # Start a span for this sorting operation
+        with tracer.start_as_current_span(f"{self.algorithm_name}_sort", 
+                                         attributes={"array_size": len(data)}):
+            # Record the start time
+            start_time = time.time()
+            
+            # Execute the sort algorithm
+            result = self.sort(data)
+            
+            # Calculate execution time
+            execution_time = (time.time() - start_time) * 1000  # in milliseconds
+            
+            # Record metrics
+            sort_execution_time.record(execution_time, {"algorithm": self.algorithm_name})
+            
+            # Log metrics
+            logger.info(f"{self.algorithm_name} sorted {len(data)} elements in {execution_time:.2f}ms")
+            logger.info(f"Comparisons: {self.comparisons}, Swaps: {self.swaps}")
+            
+            # Return the sorted array and metrics
+            return result, {
+                "algorithm": self.algorithm_name,
+                "execution_time_ms": execution_time,
+                "comparisons": self.comparisons,
+                "swaps": self.swaps,
+                "array_size": len(data)
+            }
 
 
 # Implementações dos algoritmos básicos
 class BubbleSort(SortingStrategy):
     """Implementação do algoritmo Bubble Sort."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         n = len(arr)
         
         for i in range(n):
@@ -71,9 +213,7 @@ class BubbleSort(SortingStrategy):
 class ImprovedBubbleSort(SortingStrategy):
     """Implementação do algoritmo Bubble Sort Melhorado."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         n = len(arr)
         
         for i in range(n):
@@ -93,9 +233,7 @@ class ImprovedBubbleSort(SortingStrategy):
 class InsertionSort(SortingStrategy):
     """Implementação do algoritmo Insertion Sort."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         n = len(arr)
         
         for i in range(1, n):
@@ -106,6 +244,7 @@ class InsertionSort(SortingStrategy):
             while j >= 0 and self.compare(arr[j], key):
                 arr[j + 1] = arr[j]
                 self.swaps += 1
+                sort_swaps.add(1, {"algorithm": self.algorithm_name})
                 j -= 1
             
             arr[j + 1] = key
@@ -116,9 +255,7 @@ class InsertionSort(SortingStrategy):
 class SelectionSort(SortingStrategy):
     """Implementação do algoritmo Selection Sort."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         n = len(arr)
         
         for i in range(n):
@@ -136,9 +273,7 @@ class SelectionSort(SortingStrategy):
 class QuickSort(SortingStrategy):
     """Implementação do algoritmo Quick Sort."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         self._quick_sort(arr, 0, len(arr) - 1)
         return arr
     
@@ -170,9 +305,7 @@ class QuickSort(SortingStrategy):
 class MergeSort(SortingStrategy):
     """Implementação do algoritmo Merge Sort."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         self._merge_sort(arr, 0, len(arr) - 1)
         return arr
     
@@ -206,6 +339,7 @@ class MergeSort(SortingStrategy):
                 j += 1
             k += 1
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
         
         # Copia os elementos restantes de L[], se houver
         while i < len(L):
@@ -213,6 +347,7 @@ class MergeSort(SortingStrategy):
             i += 1
             k += 1
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
         
         # Copia os elementos restantes de R[], se houver
         while j < len(R):
@@ -220,6 +355,7 @@ class MergeSort(SortingStrategy):
             j += 1
             k += 1
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
 
 
 class TimSort(SortingStrategy):
@@ -229,9 +365,7 @@ class TimSort(SortingStrategy):
         super().__init__()
         self.MIN_MERGE = 32  # Tamanho mínimo para fusão
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         n = len(arr)
         
         # Ordena pequenos subarrays usando insertion sort
@@ -260,6 +394,7 @@ class TimSort(SortingStrategy):
             while j >= left and self.compare(arr[j], temp):
                 arr[j + 1] = arr[j]
                 self.swaps += 1
+                sort_swaps.add(1, {"algorithm": self.algorithm_name})
                 j -= 1
             arr[j + 1] = temp
     
@@ -280,26 +415,27 @@ class TimSort(SortingStrategy):
                 j += 1
             k += 1
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
         
         while i < len(L):
             arr[k] = L[i]
             i += 1
             k += 1
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
         
         while j < len(R):
             arr[k] = R[j]
             j += 1
             k += 1
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
 
 
 class HeapSort(SortingStrategy):
     """Implementação do algoritmo Heap Sort."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         n = len(arr)
         
         # Constrói um heap máximo
@@ -335,14 +471,14 @@ class HeapSort(SortingStrategy):
 class CountingSort(SortingStrategy):
     """Implementação do algoritmo Counting Sort (para inteiros com range limitado)."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
-        
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         # Encontra o maior elemento no array
         max_val = max(arr)
         min_val = min(arr)
         range_val = max_val - min_val + 1
+        
+        # Log range info for monitoring
+        logger.info(f"Counting Sort range: min={min_val}, max={max_val}, range={range_val}")
         
         # Cria um array de contagem e inicializa com zeros
         count = [0] * range_val
@@ -352,22 +488,26 @@ class CountingSort(SortingStrategy):
         for i in range(len(arr)):
             count[arr[i] - min_val] += 1
             self.comparisons += 1  # Comparação implícita ao indexar
+            sort_comparisons.add(1, {"algorithm": self.algorithm_name})
         
         # Modifica o array de contagem para conter posições reais
         for i in range(1, len(count)):
             count[i] += count[i - 1]
             self.comparisons += 1  # Comparação implícita
+            sort_comparisons.add(1, {"algorithm": self.algorithm_name})
         
         # Constrói o array de saída
         for i in range(len(arr) - 1, -1, -1):
             output[count[arr[i] - min_val] - 1] = arr[i]
             count[arr[i] - min_val] -= 1
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
         
         # Copia o array de saída para o array original
         for i in range(len(arr)):
             arr[i] = output[i]
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
         
         return arr
 
@@ -375,18 +515,20 @@ class CountingSort(SortingStrategy):
 class RadixSort(SortingStrategy):
     """Implementação do algoritmo Radix Sort (para inteiros)."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
-        
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         # Encontra o número máximo para saber o número de dígitos
         max_val = max(arr)
         
+        # Log max value for monitoring
+        logger.info(f"Radix Sort max value: {max_val}")
+        
         # Faz o counting sort para cada posição de dígito
         exp = 1
+        digits_processed = 0
         while max_val // exp > 0:
             self._counting_sort(arr, exp)
             exp *= 10
+            digits_processed += 1
         
         return arr
     
@@ -400,11 +542,13 @@ class RadixSort(SortingStrategy):
             index = (arr[i] // exp) % 10
             count[index] += 1
             self.comparisons += 1  # Comparação implícita
+            sort_comparisons.add(1, {"algorithm": self.algorithm_name})
         
         # Modifica count para que contenha a posição real
         for i in range(1, 10):
             count[i] += count[i - 1]
             self.comparisons += 1  # Comparação implícita
+            sort_comparisons.add(1, {"algorithm": self.algorithm_name})
         
         # Constrói o array de saída
         for i in range(n - 1, -1, -1):
@@ -412,19 +556,19 @@ class RadixSort(SortingStrategy):
             output[count[index] - 1] = arr[i]
             count[index] -= 1
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
         
         # Copia o array de saída para arr[]
         for i in range(n):
             arr[i] = output[i]
             self.swaps += 1
+            sort_swaps.add(1, {"algorithm": self.algorithm_name})
 
 
 class ShellSort(SortingStrategy):
     """Implementação do algoritmo Shell Sort."""
     
-    def sort(self, data: List[int]) -> List[int]:
-        self.reset_metrics()
-        arr = data.copy()
+    def _sort_implementation(self, arr: List[int]) -> List[int]:
         n = len(arr)
         
         # Começa com um gap grande e vai reduzindo
@@ -439,6 +583,7 @@ class ShellSort(SortingStrategy):
                 while j >= gap and self.compare(arr[j - gap], temp):
                     arr[j] = arr[j - gap]
                     self.swaps += 1
+                    sort_swaps.add(1, {"algorithm": self.algorithm_name})
                     j -= gap
                 
                 arr[j] = temp
@@ -450,33 +595,46 @@ class ShellSort(SortingStrategy):
 
 # Contexto que utiliza as estratégias
 class SortingContext:
-    """Contexto que aplica a estratégia de ordenação escolhida."""
-    
+    """Contexto que aplica a estratégia de ordenação escolhida, agora com OpenTelemetry."""
+
     def __init__(self, strategy: SortingStrategy = None):
         self._strategy = strategy
-    
+
     def set_strategy(self, strategy: SortingStrategy) -> None:
         """Define a estratégia de ordenação."""
         self._strategy = strategy
-    
+
     def sort(self, data: List[int]) -> Tuple[List[int], float, Dict[str, int]]:
         """
-        Executa a ordenação usando a estratégia atual e mede o tempo de execução.
-        
+        Executa a ordenação usando a estratégia atual e mede o tempo de execução,
+        incluindo OpenTelemetry para rastreamento.
+
         Returns:
             tuple: (dados ordenados, tempo de execução, métricas)
         """
         if not self._strategy:
             raise ValueError("Estratégia de ordenação não definida")
-        
-        start_time = time.time()
-        sorted_data = self._strategy.sort(data)
-        execution_time = (time.time() - start_time) * 1000  # Tempo em milissegundos
-        
-        metrics = self._strategy.get_metrics()
-        metrics["execution_time_ms"] = execution_time
-        
-        return sorted_data, execution_time, metrics
+
+        # Criar um span para rastrear a execução do algoritmo
+        with tracer.start_as_current_span("sorting_execution", attributes={
+            "algorithm": self._strategy.algorithm_name,
+            "array_size": len(data)
+        }):
+            start_time = time.time()
+            sorted_data = self._strategy.sort(data)
+            execution_time = (time.time() - start_time) * 1000  # Tempo em milissegundos
+
+            # Registrar o tempo de execução na métrica do OpenTelemetry
+            sort_execution_time.record(execution_time, {"algorithm": self._strategy.algorithm_name})
+
+            # Obter métricas do algoritmo
+            metrics = self._strategy.get_metrics()
+            metrics["execution_time_ms"] = execution_time
+
+            # Log para depuração
+            logger.info(f"Algoritmo {self._strategy.algorithm_name} executado em {execution_time:.2f} ms")
+
+            return sorted_data, execution_time, metrics
 
 
 # Funções para geração e manipulação de dados
@@ -506,13 +664,13 @@ def save_results_to_file(results: Dict[str, Any], filename: str) -> None:
     with open(filename, 'w', encoding='utf-8') as file:
         file.write("Resultados de Desempenho dos Algoritmos de Ordenação\n")
         file.write("=================================================\n\n")
-        
+
         file.write(f"Tamanho do Conjunto de Dados: {results['data_size']}\n")
         file.write(f"Repetições por Algoritmo: {results['repetitions']}\n\n")
-        
+
         file.write("Métricas de Desempenho:\n")
         file.write("---------------------\n")
-        
+
         for algo_name, metrics in results['algorithms'].items():
             file.write(f"\n{algo_name}:\n")
             file.write(f"  Tempo médio de execução: {metrics['avg_time']:.2f} ms\n")
@@ -522,30 +680,108 @@ def save_results_to_file(results: Dict[str, Any], filename: str) -> None:
             file.write(f"  Trocas médias: {metrics['avg_swaps']:.0f}\n")
 
 
+def generate_performance_graph(results: Dict[str, Any], output_filename: str = "performance_graph.png") -> None:
+    """
+    Gera um gráfico de dispersão onde:
+    - Eixo X representa o número médio de trocas (swaps)
+    - Eixo Y representa o tempo médio de execução
+    - Cada ponto representa um algoritmo de ordenação
+    """
+    # Extrair dados para o gráfico
+    algorithms = []
+    swaps = []
+    times = []
+    comparisons = []  # Para o tamanho dos pontos
+
+    for algo_name, metrics in results['algorithms'].items():
+        algorithms.append(algo_name)
+        swaps.append(metrics['avg_swaps'])
+        times.append(metrics['avg_time'])
+        comparisons.append(metrics['avg_comparisons'])
+
+    # Normalizar o tamanho dos pontos para melhor visualização
+    # (usamos comparações para definir o tamanho)
+    min_comp = min(comparisons) if comparisons else 1
+    max_comp = max(comparisons) if comparisons else 1
+    if min_comp == max_comp:
+        point_sizes = [100] * len(comparisons)
+    else:
+        point_sizes = [50 + 150 * (c - min_comp) / (max_comp - min_comp) for c in comparisons]
+
+    # Cores diferentes para cada algoritmo
+    colors = plt.cm.viridis(np.linspace(0, 1, len(algorithms)))
+
+    # Criar o gráfico
+    plt.figure(figsize=(12, 8))
+    
+    # Plotar pontos
+    scatter = plt.scatter(swaps, times, s=point_sizes, c=colors, alpha=0.7)
+    
+    # Adicionar rótulos aos pontos
+    for i, algo in enumerate(algorithms):
+        plt.annotate(algo, (swaps[i], times[i]), 
+                    textcoords="offset points", 
+                    xytext=(0, 10), 
+                    ha='center')
+    
+    # Configurar o gráfico
+    plt.title(f'Desempenho dos Algoritmos de Ordenação (Tamanho do Array: {results["data_size"]})', 
+              fontsize=16)
+    plt.xlabel('Número Médio de Trocas (swaps)', fontsize=14)
+    plt.ylabel('Tempo Médio de Execução (ms)', fontsize=14)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    
+    # Adicionar linha de tendência
+    if len(swaps) > 1:  # Precisa de pelo menos 2 pontos para uma linha de tendência
+        z = np.polyfit(swaps, times, 1)
+        p = np.poly1d(z)
+        plt.plot(sorted(swaps), p(sorted(swaps)), "r--", alpha=0.5, 
+                 label=f"Tendência: y={z[0]:.2e}x+{z[1]:.2f}")
+        plt.legend()
+    
+    # Adicionar anotações explicativas
+    plt.figtext(0.02, 0.02, 
+                "Tamanho dos pontos representa o número de comparações", 
+                fontsize=10)
+    
+    # Salvar o gráfico
+    plt.tight_layout()
+    plt.savefig(output_filename)
+    
+    # Fechando a figura para liberar memória
+    plt.close()
+    
+    logger.info(f"Gráfico de desempenho salvo em {output_filename}")
+
+
 # Função principal
 def main():
     parser = argparse.ArgumentParser(description='Projeto de Algoritmos de Ordenação')
     subparsers = parser.add_subparsers(dest='command', help='Comando a ser executado')
-    
+
     # Subcomando para gerar dados
     generate_parser = subparsers.add_parser('generate', help='Gera números aleatórios')
     generate_parser.add_argument('--size', type=int, required=True, help='Quantidade de números a serem gerados')
     generate_parser.add_argument('--min', type=int, default=0, help='Valor mínimo (padrão: 0)')
     generate_parser.add_argument('--max', type=int, default=100000, help='Valor máximo (padrão: 100000)')
     generate_parser.add_argument('--output', type=str, default='data.txt', help='Arquivo de saída (padrão: data.txt)')
-    
+
     # Subcomando para executar algoritmos
     run_parser = subparsers.add_parser('run', help='Executa algoritmos de ordenação')
     run_parser.add_argument('--input', type=str, default='data.txt', help='Arquivo de entrada (padrão: data.txt)')
-    run_parser.add_argument('--algorithms', type=str, nargs='+', default=['all'], 
-                          help='Algoritmos a serem executados (padrão: all)')
-    run_parser.add_argument('--repetitions', type=int, default=5, 
-                          help='Número de repetições para cada algoritmo (padrão: 5)')
-    run_parser.add_argument('--output', type=str, default='results.txt', 
-                          help='Arquivo de saída para os resultados (padrão: results.txt)')
-    
+    run_parser.add_argument('--algorithms', type=str, nargs='+', default=['all'],
+                            help='Algoritmos a serem executados (padrão: all)')
+    run_parser.add_argument('--repetitions', type=int, default=5,
+                            help='Número de repetições para cada algoritmo (padrão: 5)')
+    run_parser.add_argument('--output', type=str, default='results.txt',
+                            help='Arquivo de saída para os resultados (padrão: results.txt)')
+    run_parser.add_argument('--graph', action='store_true',
+                            help='Gerar gráfico de desempenho')
+    run_parser.add_argument('--graph-output', type=str, default='performance_graph.png',
+                            help='Arquivo de saída para o gráfico (padrão: performance_graph.png)')
+
     args = parser.parse_args()
-    
+
     # Dicionário de estratégias disponíveis
     available_strategies = {
         'bubble': BubbleSort(),
@@ -560,65 +796,65 @@ def main():
         'radix': RadixSort(),
         'shell': ShellSort()
     }
-    
+
     if args.command == 'generate':
         print(f"Gerando {args.size} números aleatórios entre {args.min} e {args.max}...")
         numbers = generate_random_numbers(args.size, args.min, args.max)
         save_numbers_to_file(numbers, args.output)
         print(f"Dados salvos em {args.output}")
-    
+
     elif args.command == 'run':
         if not os.path.exists(args.input):
             print(f"Erro: Arquivo de entrada '{args.input}' não encontrado")
             return
-        
+
         print(f"Carregando dados de {args.input}...")
         data = load_numbers_from_file(args.input)
         data_size = len(data)
         print(f"Dados carregados: {data_size} números")
-        
+
         # Determina quais algoritmos executar
         algorithms_to_run = []
         if 'all' in args.algorithms:
             algorithms_to_run = list(available_strategies.keys())
         else:
             algorithms_to_run = args.algorithms
-        
+
         # Resultados
         results = {
             'data_size': data_size,
             'repetitions': args.repetitions,
             'algorithms': {}
         }
-        
+
         # Inicializa o contexto
         context = SortingContext()
-        
+
         # Executa cada algoritmo
         for algo_name in algorithms_to_run:
             if algo_name not in available_strategies:
                 print(f"Aviso: Algoritmo '{algo_name}' não encontrado, pulando...")
                 continue
-            
+
             print(f"Executando {algo_name}...")
             context.set_strategy(available_strategies[algo_name])
-            
+
             # Métricas para múltiplas execuções
             execution_times = []
             comparison_counts = []
             swap_counts = []
-            
+
             # Executa várias vezes para obter uma média confiável
             for i in range(args.repetitions):
                 sorted_data, execution_time, metrics = context.sort(data)
-                
+
                 print(f"  Repetição {i+1}: {execution_time:.2f} ms, "
                       f"{metrics['comparisons']} comparações, {metrics['swaps']} trocas")
-                
+
                 execution_times.append(execution_time)
                 comparison_counts.append(metrics['comparisons'])
                 swap_counts.append(metrics['swaps'])
-            
+
             # Calcula médias e adiciona aos resultados
             results['algorithms'][algo_name] = {
                 'avg_time': statistics.mean(execution_times),
@@ -627,13 +863,23 @@ def main():
                 'avg_comparisons': statistics.mean(comparison_counts),
                 'avg_swaps': statistics.mean(swap_counts)
             }
-            
+
             print(f"  Tempo médio: {results['algorithms'][algo_name]['avg_time']:.2f} ms")
-        
+
         # Salva os resultados em um arquivo
         save_results_to_file(results, args.output)
         print(f"Resultados salvos em {args.output}")
-    
+        
+        # Gera o gráfico de desempenho se solicitado
+        if args.graph:
+            try:
+                print("Gerando gráfico de desempenho...")
+                generate_performance_graph(results, args.graph_output)
+                print(f"Gráfico salvo em {args.graph_output}")
+            except Exception as e:
+                print(f"Erro ao gerar o gráfico: {e}")
+                logger.error(f"Erro ao gerar o gráfico: {e}", exc_info=True)
+
     else:
         parser.print_help()
 

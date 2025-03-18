@@ -1,0 +1,25 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+exporters:
+  otlp:
+    endpoint: "jaeger:4317"
+    tls:
+      insecure: true
+
+  debug: {}  # Adicionado para ajudar no debug
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp, debug]
+
+    metrics:   # 🔥 Certifique-se de que esta seção está presente
+      receivers: [otlp]
+      exporters: [debug]
